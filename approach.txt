@@ -1,0 +1,10 @@
+
+1 Upload image
+2 Preprocess image (grayscale, sharpen, histogram equilization (CLAHE))
+    enhances text in the image for better ocr 
+3 pretrained ocr model (eg : paddleocr, in models we have ppocr5), load in onnx format
+4 onnxruntime-web npm package loads onnx model
+    if gpu detected -> automatically switches inference to webgl from cpu 
+5 detect ocr on preprocessed image using the model
+6 regex to format raw output 
+7 save final output

@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Browser OCR - Tyre DOT & Number Plate Extractor</title>
+
+  <!-- onnxruntime-web 1.22.0 — all-ops bundle (required for PaddleOCR v5 opsets) -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.all.min.js"></script>
+
+  <!-- Cropper.js — robust image cropping library -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.js"></script>
+
+  <!-- OpenCV.js — served locally. Module.onRuntimeInitialized fires when WASM is truly ready -->
+  <script>
+    // Must be declared BEFORE opencv.js script executes
+    var Module = {
+      onRuntimeInitialized: function () {
+        console.log('[OpenCV] WASM runtime ready, cv version:', cv.getBuildInformation ? 'ok' : '?');
+        window._cvReady = true;
+        if (typeof _maybeInit === 'function') _maybeInit();
+      }
+    };
+  </script>
+  <script src="js/opencv.js"></script>
+
+  <style>
+    /* ── Reset / base ────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --border:   #2c2f3e;
+      --accent:   #00e5ff;
+      --highlight: #a78bfa;
+      --gold:     #ffd700;
+      --danger:   #ff5252;
+      --text:     #e2e8f0;
+      --muted:    #7a8099;
+      --radius:   12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 0 0 60px;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────── */
+    header {
+      background: linear-gradient(135deg, #12003e 0%, #1a0050 60%, #0e2a47 100%);
+      padding: 28px 32px 20px;
+      border-bottom: 2px solid var(--accent);
+    }
+    header h1 {
+      font-size: 1.7rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 0.5px;
+    }
+    header h1 span { color: var(--gold); }
+    header p {
+      margin-top: 6px;
+      color: #a8c4e0;
+      font-size: 0.92rem;
+    }
+
+    /* ── Main layout ─────────────────────────────────────────────────── */
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* ── Status bar ──────────────────────────────────────────────────── */
+    #status-bar {
+      margin: 24px 0 0;
+    }
+    #status-text {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    #progress-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    #progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #004f8b, var(--accent));
+      border-radius: 99px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+
+    /* ── Upload / drop zone ──────────────────────────────────────────── */
+    #drop-zone {
+      margin-top: 28px;
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      background: var(--surface);
+    }
+    #drop-zone:hover,
+    #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: #1e2235;
+    }
+    #drop-zone.ready { border-color: #2a5a3e; }
+
+    #drop-zone svg {
+      width: 56px; height: 56px;
+      fill: var(--muted);
+      margin-bottom: 16px;
+    }
+    #drop-zone p { color: var(--muted); margin: 6px 0; font-size: 0.95rem; }
+    #upload-btn {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      padding: 8px 22px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: opacity 0.2s;
+    }
+    #upload-btn:hover { opacity: 0.85; }
+
+    /* ── Results container ───────────────────────────────────────────── */
+    #results-container { margin-top: 32px; }
+
+    /* canvas wrapping + responsive scale */
+    #canvas-wrap {
+      background: #000;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      text-align: center;
+    }
+    #output-canvas {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+    }
+
+    /* optional debug canvas for preprocessed image */
+    #preprocess-wrap {
+      margin-top: 12px;
+    }
+    #preprocess-wrap summary {
+      font-size: 0.82rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      margin-bottom: 8px;
+    }
+    #preprocess-canvas {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    /* ── DOT result banner ───────────────────────────────────────────── */
+    #dot-result { margin-top: 24px; }
+
+    .dot-found {
+      background: linear-gradient(135deg, #1a2a0e, #243510);
+      border: 2px solid var(--gold);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .dot-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--gold);
+    }
+    .dot-code {
+      font-size: 2rem;
+      font-weight: 800;
+      font-family: 'Courier New', monospace;
+      color: #fff;
+      letter-spacing: 3px;
+    }
+    .dot-raw { font-size: 0.8rem; color: var(--muted); }
+
+    .dot-not-found {
+      background: #1f1214;
+      border: 1px solid var(--danger);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      color: #ff8a80;
+      font-size: 0.95rem;
+    }
+
+    /* ── All-texts list ──────────────────────────────────────────────── */
+    #all-texts { margin-top: 28px; }
+    #all-texts h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--text);
+    }
+    #all-texts .count { color: var(--muted); font-weight: 400; }
+
+    .text-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .text-list li {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.88rem;
+      line-height: 1.5;
+      word-break: break-all;
+    }
+    mark.dot-highlight {
+      background: rgba(255, 215, 0, 0.25);
+      color: var(--gold);
+      border-radius: 3px;
+      padding: 0 3px;
+      font-weight: 700;
+    }
+
+    .no-text { color: var(--muted); font-size: 0.9rem; }
+
+    /* ── OCR output card ────────────────────────────────────────────── */
+    #ocr-output {
+      margin-top: 28px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    #ocr-output-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      background: #1e2235;
+    }
+    #ocr-output-header h2 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    #ocr-output-header .meta {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    #copy-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    #copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #ocr-text-area {
+      padding: 16px 18px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.88rem;
+      line-height: 1.8;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--text);
+      max-height: 360px;
+      overflow-y: auto;
+    }
+    .ocr-line {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 3px 0;
+      border-bottom: 1px solid #1e2235;
+    }
+    .ocr-line:last-child { border-bottom: none; }
+    .ocr-idx {
+      color: var(--muted);
+      font-size: 0.72rem;
+      min-width: 24px;
+      flex-shrink: 0;
+    }
+    .ocr-conf {
+      font-size: 0.72rem;
+      color: var(--muted);
+      flex-shrink: 0;
+      min-width: 48px;
+      text-align: right;
+    }
+    .ocr-txt { flex: 1; }
+    .ocr-txt.is-empty { color: var(--muted); font-style: italic; }
+
+    /* ── Image comparison row (original | preprocessed) ─────────────── */
+    .compare-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 28px;
+    }
+    .compare-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .compare-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--muted);
+      padding: 0 2px;
+    }
+    .compare-cell canvas,
+    .compare-cell img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #000;
+    }
+
+    /* ── Detection result canvas section ────────────────────────────── */
+    .section-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--muted);
+      margin-top: 28px;
+      margin-bottom: 8px;
+      padding: 0 2px;
+    }
+    /* ── Inference log panel ──────────────────────────────────────────── */
+    #log-panel {
+      margin-top: 28px;
+      background: #0a0d14;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    #log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: #12151f;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+    }
+    #log-header span {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--muted);
+    }
+    #log-header .log-badge {
+      background: var(--accent);
+      color: #000;
+      font-size: 0.65rem;
+      font-weight: 800;
+      padding: 1px 7px;
+      border-radius: 99px;
+      min-width: 20px;
+      text-align: center;
+    }
+    #log-body {
+      max-height: 260px;
+      overflow-y: auto;
+      padding: 10px 0;
+      font-family: 'Courier New', monospace;
+      font-size: 0.78rem;
+      line-height: 1.7;
+    }
+    .log-entry {
+      display: flex;
+      gap: 10px;
+      padding: 1px 14px;
+      transition: background 0.1s;
+    }
+    .log-entry:hover { background: #12151f; }
+    .log-time  { color: #4a5060; flex-shrink: 0; }
+    .log-tag   { flex-shrink: 0; font-weight: 700; min-width: 90px; }
+    .log-msg   { color: var(--text); word-break: break-all; }
+    .log-tag.tag-info    { color: var(--accent); }
+    .log-tag.tag-ok      { color: #69ff9a; }
+    .log-tag.tag-warn    { color: var(--gold); }
+    .log-tag.tag-error   { color: var(--danger); }
+    .log-tag.tag-model   { color: #b388ff; }
+    .log-tag.tag-preproc { color: #80d8ff; }
+    .log-tag.tag-detect  { color: #ffd180; }
+    .log-tag.tag-recog   { color: #ea80fc; }
+    .log-tag.tag-dot     { color: var(--gold); }
+    .log-tag.tag-idb     { color: #a5d6a7; }
+
+    /* ── Crop modal overlay ──────────────────────────────────────────── */
+    #crop-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 1000;
+      overflow: auto;
+    }
+    #crop-modal.active { display: flex; align-items: center; justify-content: center; }
+    #crop-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      max-width: 800px;
+      width: 90%;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    #crop-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 16px;
+    }
+    #crop-canvas-wrap {
+      position: relative;
+      display: inline-block;
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    #crop-canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      cursor: crosshair;
+    }
+    #crop-box {
+      position: absolute;
+      border: 2px solid var(--accent);
+      background: rgba(0, 229, 255, 0.1);
+      cursor: move;
+    }
+    #crop-box.resizing { opacity: 0.8; }
+    #crop-box::after {
+      content: '';
+      position: absolute;
+      bottom: -5px;
+      right: -5px;
+      width: 12px;
+      height: 12px;
+      background: var(--accent);
+      cursor: se-resize;
+      border-radius: 2px;
+    }
+    #crop-info {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    #crop-img {
+      max-width: 100%;
+      max-height: 500px;
+    }
+    #crop-buttons {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .crop-btn {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    #crop-process-btn {
+      background: var(--accent);
+      color: #000;
+    }
+    #crop-process-btn:hover { opacity: 0.85; }
+    #crop-cancel-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    #crop-cancel-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Take Photo button in drop zone ────────────────────────────────── */
+    #take-photo-btn {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 8px 22px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      margin-left: 8px;
+      transition: background 0.2s, color 0.2s;
+    }
+    #take-photo-btn:hover { background: var(--accent); color: #000; }
+
+    /* ── Camera modal overlay ───────────────────────────────────────────── */
+    #camera-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 2000;
+      align-items: center;
+      justify-content: center;
+    }
+    #camera-modal.active { display: flex; }
+    #camera-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      max-width: 760px;
+      width: 95%;
+      max-height: 95vh;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #camera-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    #camera-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    #camera-mode-badge {
+      font-size: 0.75rem;
+      color: var(--muted);
+      background: #12151f;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 10px;
+    }
+    #camera-mode-badge span {
+      color: var(--accent);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    #camera-status {
+      font-size: 0.85rem;
+      color: var(--accent);
+      min-height: 20px;
+      font-family: 'Courier New', monospace;
+    }
+    /* Video + overlay stacked */
+    #camera-video-wrap {
+      position: relative;
+      width: 100%;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    #camera-video {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    #camera-overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    #camera-buttons {
+      display: flex;
+      gap: 12px;
+    }
+    .camera-btn {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    #camera-capture-btn {
+      background: var(--accent);
+      color: #000;
+    }
+    #camera-capture-btn:hover { opacity: 0.85; }
+    #camera-close-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    #camera-close-btn:hover { border-color: var(--danger); color: var(--danger); }
+    #camera-controls-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 0;
+    }
+    #autocapture-toggle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    #autocapture-toggle-wrap input[type=checkbox] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    #autocapture-toggle-wrap.active { color: var(--accent); font-weight: 600; }
+    #dropzone-camera-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    #dropzone-camera-row label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px;
+      background: #12151f;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    #dropzone-camera-row label.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    #dropzone-camera-row label input[type=checkbox] {
+      accent-color: var(--accent);
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<header>
+  <div class="container">
+    <h1>Browser OCR <span style="color:var(--accent);font-weight:300;font-size:1.1rem;">Tyre DOT & Number Plate Extractor</span></h1>
+    <p style="margin-top:6px;color:#a8c4e0;font-size:0.88rem;">Upload any image — get OCR.</p>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- ── Status / progress bar ─────────────────────────────────────── -->
+  <div id="status-bar">
+    <div id="status-text">Waiting for OpenCV.js and models to load…</div>
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+  </div>
+
+  <!-- ── Upload area ───────────────────────────────────────────────── -->
+  <input type="file" id="file-input" accept="image/*" hidden />
+  <div id="drop-zone">
+    <!-- upload icon -->
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-1-9H8l4-4 4 4h-3v4h-2v-4z"/>
+    </svg>
+    <p><strong>Drag &amp; drop</strong> an image here</p>
+    <p>or</p>
+    <button id="upload-btn">Choose Image</button>
+    <div id="dropzone-camera-row">
+      <button id="take-photo-btn">📷 Take Photo</button>
+      <label id="autocapture-toggle-wrap" class="active" title="Auto-fire capture when box is stable. Turn off to capture manually.">
+        <input type="checkbox" id="autocapture-checkbox" checked onchange="_onAutoCaptureToggle(this.checked)" />
+        Auto-Capture
+      </label>
+    </div>
+    <p style="margin-top:12px;font-size:0.8rem;">JPG · PNG · WEBP · BMP — single image — processed entirely in your browser</p>
+  </div>
+
+  <!-- ── Crop modal overlay ──────────────────────────────────────────── -->
+  <div id="crop-modal">
+    <div id="crop-container">
+      <div id="crop-title">Crop & Refine</div>
+      <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px;">Use the handles to adjust the crop region around the text. Drag inside to move, or use corners/edges to resize.</p>
+      <div id="crop-canvas-wrap">
+        <img id="crop-img" src="" alt="crop" />
+      </div>
+      <div id="crop-info"></div>
+      <div id="crop-buttons">
+        <button id="crop-process-btn" class="crop-btn" onclick="window._cropAndProcess()">Crop & Process</button>
+        <button id="crop-cancel-btn" class="crop-btn" onclick="window._cancelCrop()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Camera modal ──────────────────────────────────────────────────── -->
+  <div id="camera-modal">
+    <div id="camera-container">
+      <div id="camera-header">
+        <div id="camera-title">📷 Live Camera — point at text</div>
+      </div>
+      <div id="camera-status">Scanning… point camera at text</div>
+      <div id="camera-video-wrap">
+        <video id="camera-video" autoplay playsinline muted></video>
+        <canvas id="camera-overlay"></canvas>
+      </div>
+      <p style="font-size:0.8rem;color:var(--muted);">
+        Box turns <strong style="color:#69ff9a;">green</strong> when stable 
+        Or press <strong>Capture Now</strong> at any time.
+      </p>
+      <div id="camera-buttons">
+        <button id="camera-capture-btn" class="camera-btn" onclick="_manualCapture()">&#128248; Capture Now</button>
+        <button id="camera-close-btn"   class="camera-btn" onclick="_closeCamera()">✕ Close</button>
+      </div>
+      <p style="font-size:0.8rem;color:var(--muted);margin:0;">
+        Box turns <strong style="color:#69ff9a;">green</strong> when stable. Or press <strong>Capture Now</strong> at any time.
+      </p>
+    </div>
+  </div>
+
+  <!-- ── Results ───────────────────────────────────────────────────── -->
+  <div id="results-container" hidden>
+
+    <!-- Side-by-side: original | preprocessed -->
+    <div class="compare-row">
+      <div class="compare-cell">
+        <div class="compare-label">📷 Original Image</div>
+        <canvas id="original-canvas"></canvas>
+      </div>
+      <div class="compare-cell">
+        <div class="compare-label">⚙️ Preprocessed (CLAHE + Sharpen)</div>
+        <canvas id="preprocess-canvas"></canvas>
+      </div>
+    </div>
+
+    <!-- Detection result with bounding boxes -->
+    <div class="section-label">🔍 Detection Result</div>
+    <div id="canvas-wrap">
+      <canvas id="output-canvas"></canvas>
+    </div>
+
+    <!--  OCR Output  -->
+    <div id="ocr-output">
+      <div id="ocr-output-header">
+        <h2>📝 Recognised Text</h2>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span class="meta" id="ocr-meta"></span>
+          <button id="copy-btn" onclick="_copyOCR()">Copy all</button>
+        </div>
+      </div>
+      <div id="ocr-text-area"></div>
+    </div>
+
+    <!-- Inference log panel -->
+    <div id="log-panel">
+      <div id="log-header" onclick="document.getElementById('log-body').parentElement.classList.toggle('collapsed')">
+        <span>📜 Inference Log</span>
+        <span class="log-badge" id="log-count">0</span>
+      </div>
+      <div id="log-body"></div>
+    </div>
+
+    <!-- legacy div kept for app.js compat -->
+    <div id="dot-result" hidden></div>
+    <div id="all-texts" hidden></div>
+
+  </div>
+
+</div><!-- /container -->
+
+<!-- ── Scripts ─────────────────────────────────────────────────────────── -->
+<script src="js/preprocessor.js"></script>
+<script src="js/detector.js"></script>
+<script src="js/recognizer.js"></script>
+<script src="js/live-detector.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>
