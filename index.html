@@ -724,11 +724,7 @@
     <p>or</p>
     <button id="upload-btn">Choose Image</button>
     <div id="dropzone-camera-row">
-      <button id="take-photo-btn">📷 Take Photo</button>
-      <label id="autocapture-toggle-wrap" class="active" title="Auto-fire capture when box is stable. Turn off to capture manually.">
-        <input type="checkbox" id="autocapture-checkbox" checked onchange="_onAutoCaptureToggle(this.checked)" />
-        Auto-Capture
-      </label>
+      <button id="take-photo-btn">&#128247; Take Photo</button>
     </div>
     <p style="margin-top:12px;font-size:0.8rem;">JPG · PNG · WEBP · BMP — single image — processed entirely in your browser</p>
   </div>
@@ -743,7 +739,7 @@
       </div>
       <div id="crop-info"></div>
       <div id="crop-buttons">
-        <button id="crop-process-btn" class="crop-btn" onclick="window._cropAndProcess()">Crop & Process</button>
+        <button id="crop-process-btn" class="crop-btn" onclick="window._cropAndProcess()">Proceed</button>
         <button id="crop-cancel-btn" class="crop-btn" onclick="window._cancelCrop()">Cancel</button>
       </div>
     </div>
@@ -755,22 +751,18 @@
       <div id="camera-header">
         <div id="camera-title">📷 Live Camera — point at text</div>
       </div>
-      <div id="camera-status">Scanning… point camera at text</div>
+      <div id="camera-status">Align the DOT code inside the box, then press Capture</div>
       <div id="camera-video-wrap">
         <video id="camera-video" autoplay playsinline muted></video>
         <canvas id="camera-overlay"></canvas>
       </div>
       <p style="font-size:0.8rem;color:var(--muted);">
-        Box turns <strong style="color:#69ff9a;">green</strong> when stable 
-        Or press <strong>Capture Now</strong> at any time.
+        Align the <strong>DOT code</strong> inside the guide box, then press <strong>Capture</strong>.
       </p>
       <div id="camera-buttons">
-        <button id="camera-capture-btn" class="camera-btn" onclick="_manualCapture()">&#128248; Capture Now</button>
+        <button id="camera-capture-btn" class="camera-btn" onclick="_manualCapture()">&#128248; Capture</button>
         <button id="camera-close-btn"   class="camera-btn" onclick="_closeCamera()">✕ Close</button>
       </div>
-      <p style="font-size:0.8rem;color:var(--muted);margin:0;">
-        Box turns <strong style="color:#69ff9a;">green</strong> when stable. Or press <strong>Capture Now</strong> at any time.
-      </p>
     </div>
   </div>
 
@@ -784,7 +776,7 @@
         <canvas id="original-canvas"></canvas>
       </div>
       <div class="compare-cell">
-        <div class="compare-label">⚙️ Preprocessed (CLAHE + Sharpen)</div>
+        <div class="compare-label" id="preprocess-label">⚙️ Preprocessed (CLAHE + sharpen)</div>
         <canvas id="preprocess-canvas"></canvas>
       </div>
     </div>
