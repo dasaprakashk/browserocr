@@ -591,10 +591,11 @@
       min-height: 20px;
       font-family: 'Courier New', monospace;
     }
-    /* Video + overlay stacked */
+    /* Video + overlay stacked — wide landscape strip matching DOT code aspect ratio */
     #camera-video-wrap {
       position: relative;
       width: 100%;
+      aspect-ratio: 16 / 4;   /* ~4:1 wide strip — portrait phone shows only centre band */
       background: #000;
       border-radius: 8px;
       overflow: hidden;
@@ -603,7 +604,9 @@
     #camera-video {
       display: block;
       width: 100%;
-      height: auto;
+      height: 100%;
+      object-fit: cover;        /* crop video to fill the strip, centering it */
+      object-position: center center;
     }
     #camera-overlay {
       position: absolute;
