@@ -107,10 +107,12 @@ let _modelsLoaded = false;
  * Single model set used for all flows — live camera, upload, and manual crop.
  */
 
-// ── Camera state ───────────────────────────────────────────────────────────────────
-let _cameraStream       = null;   // MediaStream from getUserMedia
-let _liveDetector       = null;   // LiveDetectorDet instance
-let _autoCaptureEnabled = true;   // whether live detection auto-triggers capture
+// ── Pipeline config ──────────────────────────────────────────────────────────
+const APPLY_PREPROCESSING = true;   // set false to skip CLAHE+sharpen (raw input to det+rec)
+
+// ── Camera state ─────────────────────────────────────────────────────────────────────
+let _cameraStream  = null;   // MediaStream from getUserMedia
+let _liveDetector  = null;   // LiveDetectorDet instance
 
 // ── DOM refs (populated after DOMContentLoaded) ───────────────────────────────
 let dropZone, fileInput, uploadBtn;
@@ -279,14 +281,6 @@ async function _openCamera() {
     return;
   }
 
-  // Sync _autoCaptureEnabled from the checkbox (may differ from last session)
-  const checkbox = document.getElementById('autocapture-checkbox');
-  if (checkbox) {
-    _autoCaptureEnabled = checkbox.checked;
-    const wrap = document.getElementById('autocapture-toggle-wrap');
-    if (wrap) wrap.classList.toggle('active', _autoCaptureEnabled);
-  }
-
   try {
     _cameraStream = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -300,7 +294,6 @@ async function _openCamera() {
     videoEl.srcObject = _cameraStream;
     await videoEl.play();
 
-    // Sync overlay canvas size once video dimensions are known
     videoEl.addEventListener('loadedmetadata', () => {
       overlayCanvas.width  = videoEl.videoWidth;
       overlayCanvas.height = videoEl.videoHeight;
@@ -308,8 +301,8 @@ async function _openCamera() {
     }, { once: true });
 
     _liveDetector = LiveDetectorDet;
-    _liveDetector.start(videoEl, overlayCanvas, statusEl, _onLiveCapture, _autoCaptureEnabled);
-    _log('info', `Live detection started — det_v5.onnx — auto-capture: ${_autoCaptureEnabled ? 'ON' : 'OFF'}`);
+    _liveDetector.start(videoEl, overlayCanvas, statusEl, _onLiveCapture);
+    _log('info', 'Camera started — guide-box mode');
 
   } catch (err) {
     statusEl.textContent = `❌ Camera error: ${err.message}`;
@@ -334,30 +327,11 @@ function _closeCamera() {
   _log('info', 'Camera closed');
 }
 
-/** Manual capture button — grab current frame immediately. */
+/** Manual capture button — grab current frame and pass to crop tool. */
 function _manualCapture() {
   if (_liveDetector) {
     _liveDetector.captureNow();
-  } else {
-    // Detector not running (e.g., camera opened but no stream yet) — grab raw frame
-    const videoEl = document.getElementById('camera-video');
-    if (videoEl && videoEl.videoWidth) {
-      const cap   = document.createElement('canvas');
-      cap.width   = videoEl.videoWidth;
-      cap.height  = videoEl.videoHeight;
-      cap.getContext('2d').drawImage(videoEl, 0, 0);
-      _onLiveCapture(cap);
-    }
   }
-}
-
-/** Called by the Auto-Capture checkbox in the camera modal. */
-function _onAutoCaptureToggle(enabled) {
-  _autoCaptureEnabled = enabled;
-  const wrap = document.getElementById('autocapture-toggle-wrap');
-  if (wrap) wrap.classList.toggle('active', enabled);
-  if (_liveDetector) _liveDetector.setAutoCapture(enabled);
-  _log('info', `Auto-capture ${enabled ? 'enabled — will fire when stable' : 'disabled — press Capture Now manually'}`);
 }
 
 /**
@@ -521,13 +495,32 @@ async function _processCroppedImage(srcCanvas, fileName) {
     originalCanvas.getContext('2d').drawImage(srcCanvas, 0, 0);
 
     // ── Preprocess ────────────────────────────────────────────────────────
-    _setStatus('Preprocessing (CLAHE + sharpen)…', 0.05);
+    _setStatus('Preprocessing…', 0.05);
     _log('preproc', `Sending ${srcCanvas.width}×${srcCanvas.height} px image to preprocessor…`);
     const t0pre = performance.now();
-    const { original, preprocessed } = Preprocessor.process(srcCanvas);
-    _log('preproc', `Resize → CLAHE (clip=2.5, 8×8 tiles) → unsharp mask (σ=1.0) → output: ${preprocessed.cols}×${preprocessed.rows} px`);
+    let original, preprocessed;
+    if (APPLY_PREPROCESSING) {
+      ({ original, preprocessed } = Preprocessor.process(srcCanvas));
+      _log('preproc', `Resize → CLAHE (clip=2.5, 8×8 tiles) → unsharp mask (σ=1.0) → output: ${preprocessed.cols}×${preprocessed.rows} px`);
+    } else {
+      preprocessed = cv.imread(srcCanvas);
+      const tmp = new cv.Mat();
+      cv.cvtColor(preprocessed, tmp, cv.COLOR_RGBA2BGR);
+      preprocessed.delete();
+      preprocessed = tmp;
+      original = preprocessed.clone();
+      _log('preproc', `[PREPROCESSING DISABLED] Raw image passed directly — ${preprocessed.cols}×${preprocessed.rows} px`);
+    }
     _log('ok', `Preprocessing done in ${(performance.now() - t0pre).toFixed(0)} ms`);
     Preprocessor.renderToCanvas(preprocessed, preprocessCanvas);
+
+    // Update the preprocess panel label
+    const preprocLabel = document.getElementById('preprocess-label');
+    if (preprocLabel) {
+      preprocLabel.textContent = APPLY_PREPROCESSING
+        ? 'Preprocessed (CLAHE + sharpen)'
+        : 'Preprocessed (raw image)';
+    }
 
     // ── Detection ─────────────────────────────────────────────────────────
     _setStatus('Detecting text regions…', 0.15);
@@ -745,4 +738,3 @@ window._cancelCrop          = _cancelCrop;
 window._openCamera          = _openCamera;
 window._closeCamera         = _closeCamera;
 window._manualCapture       = _manualCapture;
-window._onAutoCaptureToggle = _onAutoCaptureToggle;
