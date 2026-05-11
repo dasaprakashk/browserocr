@@ -284,9 +284,10 @@ async function _openCamera() {
   try {
     _cameraStream = await navigator.mediaDevices.getUserMedia({
       video: {
-        facingMode: { ideal: 'environment' },
-        width:      { ideal: 1280 },
-        height:     { ideal: 720 },
+        facingMode:  { ideal: 'environment' },
+        width:       { ideal: 1280 },
+        height:      { ideal: 720 },
+        aspectRatio: { ideal: 16/9 },   // widest available on device
       },
       audio: false,
     });
@@ -295,9 +296,11 @@ async function _openCamera() {
     await videoEl.play();
 
     videoEl.addEventListener('loadedmetadata', () => {
-      overlayCanvas.width  = videoEl.videoWidth;
-      overlayCanvas.height = videoEl.videoHeight;
-      _log('info', `Camera stream: ${videoEl.videoWidth}×${videoEl.videoHeight}`);
+      // Size canvas to wrapper display dimensions (CSS strip), not full video dims
+      const wrap = overlayCanvas.parentElement;
+      overlayCanvas.width  = wrap.offsetWidth  || 400;
+      overlayCanvas.height = wrap.offsetHeight || 125;
+      _log('info', `Camera stream: ${videoEl.videoWidth}\u00d7${videoEl.videoHeight} — display strip: ${overlayCanvas.width}\u00d7${overlayCanvas.height}`);
     }, { once: true });
 
     _liveDetector = LiveDetectorDet;
@@ -400,12 +403,11 @@ function _showCropModal(img, cropRect) {
       const canvasData = _cropper.getCanvasData();
       const scaleX = canvasData.width  / img.naturalWidth;
       const scaleY = canvasData.height / img.naturalHeight;
-      const PAD    = 10;   // px padding around the box
       _cropper.setCropBoxData({
-        left:   canvasData.left + cropRect.x      * scaleX - PAD,
-        top:    canvasData.top  + cropRect.y      * scaleY - PAD,
-        width:  cropRect.width  * scaleX + PAD * 2,
-        height: cropRect.height * scaleY + PAD * 2,
+        left:   canvasData.left + cropRect.x      * scaleX,
+        top:    canvasData.top  + cropRect.y      * scaleY,
+        width:  cropRect.width  * scaleX,
+        height: cropRect.height * scaleY,
       });
       _log('info', `Crop box pre-set to detected region: ${Math.round(cropRect.x)},${Math.round(cropRect.y)} ${Math.round(cropRect.width)}×${Math.round(cropRect.height)} px`);
     },
