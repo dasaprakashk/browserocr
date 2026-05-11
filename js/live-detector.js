@@ -9,8 +9,8 @@ const LiveDetectorDet = (() => {
 
   // ── Guide box proportions (fraction of video dimensions) ─────────────────
   // Landscape strip — matches typical DOT code aspect ratio
-  const GUIDE_W_FRAC = 0.82;   // 82% of video width
-  const GUIDE_H_FRAC = 0.28;   // 28% of video height
+  const GUIDE_W_FRAC = 0.92;   // 92% of strip width
+  const GUIDE_H_FRAC = 0.52;   // 52% of strip height (shorter vertically)
 
   // ── State ─────────────────────────────────────────────────────────────────
   let _videoEl       = null;
@@ -78,6 +78,35 @@ const LiveDetectorDet = (() => {
     _rafId = requestAnimationFrame(_drawGuide);
   }
 
+  // ── Map guide rect through object-fit:cover offset to full-video coords ──
+  // The video-wrap shows a cropped strip of the full video stream.
+  // This converts the guide box (in display/canvas space) back to real video coords.
+  function _guideRectInVideoCoords() {
+    const vw = _videoEl.videoWidth;
+    const vh = _videoEl.videoHeight;
+    const dw = _overlayCanvas.width;    // display strip width
+    const dh = _overlayCanvas.height;   // display strip height
+
+    // object-fit:cover scale = whichever axis fills first
+    const scale = Math.max(dw / vw, dh / vh);
+
+    // Video offset clipped on each side (in video pixel space)
+    const clipX = (vw * scale - dw) / 2 / scale;
+    const clipY = (vh * scale - dh) / 2 / scale;
+
+    // Guide rect in display coords
+    const { x: gx, y: gy, w: gw, h: gh } = _getGuideRect(dw, dh);
+
+    // Map to video coords — exact guide box, no extra padding
+    // (_showCropModal adds its own padding on top)
+    return {
+      x:      Math.max(0,  clipX + gx / scale),
+      y:      Math.max(0,  clipY + gy / scale),
+      width:  Math.min(vw, gw / scale),
+      height: Math.min(vh, gh / scale),
+    };
+  }
+
   // ── Public API ────────────────────────────────────────────────────────────
   return {
     start(videoEl, overlayCanvas, statusEl, onCapture) {
@@ -87,10 +116,12 @@ const LiveDetectorDet = (() => {
       _onCapture     = onCapture;
       _running       = true;
 
-      if (videoEl.videoWidth) {
-        overlayCanvas.width  = videoEl.videoWidth;
-        overlayCanvas.height = videoEl.videoHeight;
-      }
+      // Size canvas to wrapper display dimensions (the CSS strip, not full video)
+      const wrap = overlayCanvas.parentElement;
+      const dw   = wrap.offsetWidth  || 400;
+      const dh   = wrap.offsetHeight || 125;
+      overlayCanvas.width  = dw;
+      overlayCanvas.height = dh;
 
       if (_statusEl) _statusEl.textContent = 'Align the DOT code inside the box, then press Capture';
       _rafId = requestAnimationFrame(_drawGuide);
@@ -114,8 +145,9 @@ const LiveDetectorDet = (() => {
       cap.width  = vw;
       cap.height = vh;
       cap.getContext('2d').drawImage(_videoEl, 0, 0);
-      const { x, y, w, h } = _getGuideRect(vw, vh);
-      if (_onCapture) _onCapture(cap, { x, y, width: w, height: h });
+      // Map guide box through cover-crop offset to full-video coordinates
+      const cropRect = _guideRectInVideoCoords();
+      if (_onCapture) _onCapture(cap, cropRect);
     },
   };
 
